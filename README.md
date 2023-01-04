@@ -1,14 +1,20 @@
 # prefect-operator
-// TODO(user): Add simple overview of use/purpose
+
+Automatically manage the orion server and agents for your Prefect environment on Kubernetes.
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+
+Setting up Prefect on Kubernetes requires some work. You'll need a postgres database and a set of agents to run
+your workflow environment. This operator automates the work of managing the prefect environment. It will automatically
+generate the required secrets for you and configure the required pods.
 
 ## Getting Started
+
 You’ll need a Kubernetes cluster to run against. You can use [KIND](https://sigs.k8s.io/kind) to get a local cluster for testing, or run against a remote cluster.
 **Note:** Your controller will automatically use the current context in your kubeconfig file (i.e. whatever cluster `kubectl cluster-info` shows).
 
 ### Running on the cluster
+
 1. Install Instances of Custom Resources:
 
 ```sh
