@@ -26,7 +26,13 @@ import (
 // PrefectEnvironmentSpec defines the desired state of PrefectEnvironment
 type PrefectEnvironmentSpec struct {
 	// Agents configures the number of agents to deploy
-	Agents int32 `json:"agents,omitempty"`
+	AgentReplicas int32 `json:"agents,omitempty"`
+
+	// DatabaseReplicas controls how many replicas of the database to deploy
+	DatabaseReplicas int32 `json:"databaseReplicas,omitempty"`
+
+	// OrionReplicas controls how many replicas of the orion server to deploy
+	OrionReplicas int32 `json:"orionReplicas,omitempty"`
 }
 
 // PrefectEnvironmentStatus defines the observed state of PrefectEnvironment

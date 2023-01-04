@@ -18,11 +18,20 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	utils "github.com/wmeints/prefect-operator/utils"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 
 	mlopsv1alpha1 "github.com/wmeints/prefect-operator/api/v1alpha1"
 )
@@ -47,9 +56,26 @@ type PrefectEnvironmentReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.13.0/pkg/reconcile
 func (r *PrefectEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
-	// TODO(user): your logic here
+	environment := &mlopsv1alpha1.PrefectEnvironment{}
+
+	if err := r.Get(ctx, req.NamespacedName, environment); err != nil {
+		logger.Info("unable to fetch PrefectEnvironment, ignoring the operation.")
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	logger.Info("reconciling PrefectEnvironment", "name", environment.Name)
+
+	if err := r.reconcileEnvironmentSecrets(ctx, environment); err != nil {
+		logger.Error(err, "unable to reconcile environment secrets")
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileOrionDatabase(ctx, environment); err != nil {
+		logger.Error(err, "unable to reconcile orion database")
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{}, nil
 }
@@ -59,4 +85,191 @@ func (r *PrefectEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mlopsv1alpha1.PrefectEnvironment{}).
 		Complete(r)
+}
+
+func (r *PrefectEnvironmentReconciler) reconcileEnvironmentSecrets(ctx context.Context, environment *mlopsv1alpha1.PrefectEnvironment) error {
+	logger := log.FromContext(ctx)
+	secretName := fmt.Sprintf("%s-environment-secrets", environment.Name)
+	secret := &corev1.Secret{}
+
+	if err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: environment.GetNamespace()}, secret); err != nil {
+		if errors.IsNotFound(err) {
+			databasePassword := utils.GeneratePassword(16, 2, 2, 2)
+
+			logger.Info("automatically generating secret for the environment", "name", environment.GetName())
+
+			secret = &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      secretName,
+					Namespace: environment.GetNamespace(),
+				},
+				StringData: map[string]string{
+					"databasePassword": databasePassword,
+				},
+			}
+
+			ctrl.SetControllerReference(environment, secret, r.Scheme)
+
+			if err := r.Create(ctx, secret); err != nil {
+				return err
+			}
+
+			return nil
+		}
+
+		return err
+	}
+
+	return nil
+}
+
+func (r *PrefectEnvironmentReconciler) reconcileOrionDatabase(ctx context.Context, environment *mlopsv1alpha1.PrefectEnvironment) error {
+	if err := r.reconcileOrionDatabaseDeployment(ctx, environment); err != nil {
+		return err
+	}
+
+	if err := r.reconcileOrionDatabaseService(ctx, environment); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *PrefectEnvironmentReconciler) reconcileOrionDatabaseDeployment(ctx context.Context, environment *mlopsv1alpha1.PrefectEnvironment) error {
+	logger := log.FromContext(ctx)
+
+	deploymentName := fmt.Sprintf("%s-orion-database", environment.Name)
+	deployment := &appsv1.Deployment{}
+
+	deploymentLabels := map[string]string{
+		"mlops.aigency.com/environment": environment.Name,
+		"mlops.aigency.com/component":   "orion-database",
+	}
+
+	if err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: environment.GetNamespace()}, deployment); err != nil {
+		if errors.IsNotFound(err) {
+			logger.Info("creating orion database", "replicas", environment.Spec.DatabaseReplicas, "name", deploymentName)
+
+			deployment = &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: environment.GetNamespace(),
+					Labels:    deploymentLabels,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: &environment.Spec.DatabaseReplicas,
+					Selector: &metav1.LabelSelector{
+						MatchLabels: deploymentLabels,
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: deploymentLabels,
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "orion-database",
+									Image: "postgres:14",
+									Env: []corev1.EnvVar{
+										{
+											Name: "POSTGRES_PASSWORD",
+											ValueFrom: &corev1.EnvVarSource{
+												SecretKeyRef: &corev1.SecretKeySelector{
+													LocalObjectReference: corev1.LocalObjectReference{
+														Name: fmt.Sprintf("%s-environment-secrets", environment.Name),
+													},
+													Key: "databasePassword",
+												},
+											},
+										},
+									},
+									Ports: []corev1.ContainerPort{
+										{
+											ContainerPort: 5432,
+											Name:          "tcp-postgres",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			if err := ctrl.SetControllerReference(environment, deployment, r.Scheme); err != nil {
+				return err
+			}
+
+			if err := r.Create(ctx, deployment); err != nil {
+				return err
+			}
+
+			return nil
+		}
+
+		if deployment.Spec.Replicas != &environment.Spec.DatabaseReplicas {
+			deployment.Spec.Replicas = &environment.Spec.DatabaseReplicas
+
+			logger.Info("scaling orion database", "replicas", environment.Spec.DatabaseReplicas, "name", deploymentName)
+
+			if err := r.Update(ctx, deployment); err != nil {
+				return nil
+			}
+		}
+
+		return nil
+	}
+
+	return nil
+}
+
+func (r *PrefectEnvironmentReconciler) reconcileOrionDatabaseService(ctx context.Context, environment *mlopsv1alpha1.PrefectEnvironment) error {
+	logger := log.FromContext(ctx)
+
+	serviceLabels := map[string]string{
+		"mlops.aigency.com/environment": environment.Name,
+		"mlops.aigency.com/component":   "orion-database",
+	}
+
+	serviceName := fmt.Sprintf("%s-orion-database", environment.Name)
+	service := &corev1.Service{}
+
+	if err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: environment.GetNamespace()}, service); err != nil {
+		if errors.IsNotFound(err) {
+			logger.Info("creating orion database service", "name", serviceName)
+
+			service = &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serviceName,
+					Namespace: environment.GetNamespace(),
+					Labels:    serviceLabels,
+				},
+				Spec: corev1.ServiceSpec{
+					Selector: serviceLabels,
+					Type:     corev1.ServiceTypeClusterIP,
+					Ports: []corev1.ServicePort{
+						{
+							TargetPort: intstr.FromInt(5432),
+							Port:       5432,
+							Name:       "tcp-postgres",
+						},
+					},
+				},
+			}
+
+			if err := ctrl.SetControllerReference(environment, service, r.Scheme); err != nil {
+				return err
+			}
+
+			if err := r.Create(ctx, service); err != nil {
+				return err
+			}
+
+			return nil
+		}
+
+		return err
+	}
+
+	return nil
 }
