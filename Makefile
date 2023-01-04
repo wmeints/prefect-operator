@@ -63,6 +63,8 @@ endif
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
+PREFECT_VERSION=2.3.2
+
 .PHONY: all
 all: build
 

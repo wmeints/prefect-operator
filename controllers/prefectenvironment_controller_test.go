@@ -87,7 +87,7 @@ var _ = Describe("PrefectEnvironment controller", func() {
 
 			Expect(err).To(Not(HaveOccurred()))
 
-			By("Checking if the database was deployed")
+			By("Checking if the database deployment was created")
 			Eventually(func() error {
 				databaseDeployment := &appsv1.Deployment{}
 				deploymentName := types.NamespacedName{
@@ -98,11 +98,33 @@ var _ = Describe("PrefectEnvironment controller", func() {
 				return k8sClient.Get(ctx, deploymentName, databaseDeployment)
 			}, time.Minute, time.Second).Should(Succeed())
 
-			By("Checking if the database service was deployed")
+			By("Checking if the database service was created")
 			Eventually(func() error {
 				service := &corev1.Service{}
 				serviceName := types.NamespacedName{
 					Name:      fmt.Sprintf("%s-orion-database", environmentName),
+					Namespace: environmentNamespace,
+				}
+
+				return k8sClient.Get(ctx, serviceName, service)
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("Checking if the orion deployment was created")
+			Eventually(func() error {
+				deployment := &appsv1.Deployment{}
+				deploymentName := types.NamespacedName{
+					Name:      fmt.Sprintf("%s-orion-server", environmentName),
+					Namespace: environmentNamespace,
+				}
+
+				return k8sClient.Get(ctx, deploymentName, deployment)
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("Checking if the orion service was created")
+			Eventually(func() error {
+				service := &corev1.Service{}
+				serviceName := types.NamespacedName{
+					Name:      fmt.Sprintf("%s-orion-server", environmentName),
 					Namespace: environmentNamespace,
 				}
 

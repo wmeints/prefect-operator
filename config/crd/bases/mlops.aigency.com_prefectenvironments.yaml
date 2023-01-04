@@ -45,6 +45,8 @@ spec:
                   to deploy
                 format: int32
                 type: integer
+              image:
+                type: string
               orionReplicas:
                 description: OrionReplicas controls how many replicas of the orion
                   server to deploy

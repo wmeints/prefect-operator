@@ -73,7 +73,12 @@ func (r *PrefectEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	if err := r.reconcileOrionDatabase(ctx, environment); err != nil {
-		logger.Error(err, "unable to reconcile orion database")
+		logger.Error(err, "unable to reconcile the orion database")
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileOrionServer(ctx, environment); err != nil {
+		logger.Error(err, "unable to reconcile the orion server")
 		return ctrl.Result{}, err
 	}
 
@@ -252,6 +257,152 @@ func (r *PrefectEnvironmentReconciler) reconcileOrionDatabaseService(ctx context
 							TargetPort: intstr.FromInt(5432),
 							Port:       5432,
 							Name:       "tcp-postgres",
+						},
+					},
+				},
+			}
+
+			if err := ctrl.SetControllerReference(environment, service, r.Scheme); err != nil {
+				return err
+			}
+
+			if err := r.Create(ctx, service); err != nil {
+				return err
+			}
+
+			return nil
+		}
+
+		return err
+	}
+
+	return nil
+}
+
+func (r *PrefectEnvironmentReconciler) reconcileOrionServer(ctx context.Context, environment *mlopsv1alpha1.PrefectEnvironment) error {
+	if err := r.reconcileOrionServerDeployment(ctx, environment); err != nil {
+		return err
+	}
+
+	if err := r.reconcileOrionServerService(ctx, environment); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *PrefectEnvironmentReconciler) reconcileOrionServerDeployment(ctx context.Context, environment *mlopsv1alpha1.PrefectEnvironment) error {
+	logger := log.FromContext(ctx)
+
+	deploymentName := fmt.Sprintf("%s-orion-server", environment.Name)
+	deployment := &appsv1.Deployment{}
+
+	deploymentImage := environment.Spec.Image
+
+	// Automatically choose the latest when we don't get an image from the user.
+	if deploymentImage == "" {
+		deploymentImage = "prefecthq/prefect:2-latest"
+	}
+
+	if err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: environment.GetNamespace()}, deployment); err != nil {
+		if errors.IsNotFound(err) {
+			logger.Info("creating orion server deployment", "name", deploymentName)
+
+			deploymentLabels := map[string]string{
+				"mlops.aigency.com/environment": environment.Name,
+				"mlops.aigency.com/component":   "orion-server",
+			}
+
+			deployment = &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: environment.GetNamespace(),
+					Labels:    deploymentLabels,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: &environment.Spec.OrionReplicas,
+					Selector: &metav1.LabelSelector{
+						MatchLabels: deploymentLabels,
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: deploymentLabels,
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "orion-server",
+									Image: deploymentImage,
+									Ports: []corev1.ContainerPort{
+										{
+											ContainerPort: 4200,
+											Name:          "http-orion",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			if err := ctrl.SetControllerReference(environment, deployment, r.Scheme); err != nil {
+				return err
+			}
+
+			if err := r.Create(ctx, deployment); err != nil {
+				return err
+			}
+
+			return nil
+		}
+
+		return err
+	}
+
+	if deployment.Spec.Replicas != &environment.Spec.OrionReplicas {
+		deployment.Spec.Replicas = &environment.Spec.OrionReplicas
+
+		logger.Info("scaling orion server", "replicas", environment.Spec.OrionReplicas, "name", deploymentName)
+
+		if err := r.Update(ctx, deployment); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (r *PrefectEnvironmentReconciler) reconcileOrionServerService(ctx context.Context, environment *mlopsv1alpha1.PrefectEnvironment) error {
+	logger := log.FromContext(ctx)
+
+	serviceLabels := map[string]string{
+		"mlops.aigency.com/environment": environment.Name,
+		"mlops.aigency.com/component":   "orion-server",
+	}
+
+	serviceName := fmt.Sprintf("%s-orion-server", environment.Name)
+
+	service := &corev1.Service{}
+
+	if err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: environment.GetNamespace()}, service); err != nil {
+		if errors.IsNotFound(err) {
+			logger.Info("creating orion server service", "name", environment.GetName())
+
+			service = &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serviceName,
+					Namespace: environment.GetNamespace(),
+					Labels:    serviceLabels,
+				},
+				Spec: corev1.ServiceSpec{
+					Type:     corev1.ServiceTypeClusterIP,
+					Selector: serviceLabels,
+					Ports: []corev1.ServicePort{
+						{
+							TargetPort: intstr.FromInt(4200),
+							Port:       4200,
+							Name:       "http-orion",
 						},
 					},
 				},

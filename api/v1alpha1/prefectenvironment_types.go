@@ -33,6 +33,8 @@ type PrefectEnvironmentSpec struct {
 
 	// OrionReplicas controls how many replicas of the orion server to deploy
 	OrionReplicas int32 `json:"orionReplicas,omitempty"`
+
+	Image string `json:"image,omitempty"`
 }
 
 // PrefectEnvironmentStatus defines the observed state of PrefectEnvironment
