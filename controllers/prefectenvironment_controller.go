@@ -331,8 +331,9 @@ func (r *PrefectEnvironmentReconciler) reconcileOrionServerDeployment(ctx contex
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
 								{
-									Name:  "orion-server",
-									Image: deploymentImage,
+									Name:    "orion-server",
+									Image:   deploymentImage,
+									Command: []string{"prefect", "orion", "start"},
 									Ports: []corev1.ContainerPort{
 										{
 											ContainerPort: 4200,
