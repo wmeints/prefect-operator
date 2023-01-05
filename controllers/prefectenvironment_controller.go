@@ -82,6 +82,11 @@ func (r *PrefectEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err
 	}
 
+    if err := r.reconcileAgent(ctx, environment); err != nil {
+        logger.Error(err, "unable to reconcile the agent for the environment")
+        return ctrl.Result{}, err
+    }
+
 	return ctrl.Result{}, nil
 }
 
@@ -424,4 +429,138 @@ func (r *PrefectEnvironmentReconciler) reconcileOrionServerService(ctx context.C
 	}
 
 	return nil
+}
+
+func (r *PrefectEnvironmentReconciler) reconcileAgent(ctx context.Context, environment *mlopsv1alpha1.PrefectEnvironment) error {
+    if err := r.reconcileAgentDeployment(ctx, environment); err != nil {
+        return err
+    }
+
+    if err := r.reconcileAgentService(ctx, environment); err != nil {
+        return err
+    }
+
+    return nil
+}
+
+func (r *PrefectEnvironmentReconciler) reconcileAgentDeployment(ctx context.Context, environment *mlopsv1alpha1.PrefectEnvironment) error {
+    logger := log.FromContext(ctx)
+
+    statefulSetName := fmt.Sprintf("%s-agent", environment.GetName())
+    statefulSet := &appsv1.StatefulSet{}
+
+    statefulSetLabels := map[string]string {
+        "mlops.aigency.com/component": "agent",
+        "mlops.aigency.com/environment": environment.GetName(),
+    }
+
+    if err := r.Get(ctx, types.NamespacedName{ Name: statefulSetName, Namespace: environment.GetNamespace()}, statefulSet); err != nil {
+        if errors.IsNotFound(err) {
+            deploymentImage := environment.Spec.Image
+
+            if deploymentImage == "" {
+                deploymentImage = "prefecthq/prefect:2-latest"
+            }
+
+            prefectApiUrl := fmt.Sprintf("%s-orion-server", environment.GetName())
+
+            statefulSet = &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      statefulSetName,
+					Namespace: environment.GetNamespace(),
+					Labels:    statefulSetLabels,
+				},
+                Spec: appsv1.StatefulSetSpec{
+                    ServiceName: statefulSetName,
+                    Replicas: &environment.Spec.AgentReplicas,
+					Selector: &metav1.LabelSelector{
+						MatchLabels: statefulSetLabels,
+					},
+                    Template: corev1.PodTemplateSpec{
+                        ObjectMeta: metav1.ObjectMeta{
+                            Labels: statefulSetLabels,
+                        },
+                        Spec: corev1.PodSpec{
+                            Containers: []corev1.Container{
+								{
+									Name:    "agent",
+									Image:   deploymentImage,
+									Command: []string{"prefect", "agent", "start"},
+									Env: []corev1.EnvVar{
+										{
+											Name: "PREFECT_API_URL",
+                                            Value: prefectApiUrl,
+										},
+									},
+								},
+                            },
+                        },
+                    },
+                },
+            }
+
+            if err := ctrl.SetControllerReference(environment, statefulSet, r.Scheme); err != nil {
+			    logger.Info("scaling orion database", "replicas", environment.Spec.DatabaseReplicas, "name", environment.GetName())
+                return err
+            }
+
+            if err := r.Create(ctx, statefulSet); err != nil {
+                return err
+            }
+
+            return nil
+        }
+
+        if statefulSet.Spec.Replicas != &environment.Spec.AgentReplicas {
+            statefulSet.Spec.Replicas = &environment.Spec.AgentReplicas
+
+            if err := r.Update(ctx, statefulSet); err != nil {
+                return err
+            }
+        }
+
+        return err
+    }
+
+    return nil
+}
+
+func (r *PrefectEnvironmentReconciler) reconcileAgentService(ctx context.Context, environment *mlopsv1alpha1.PrefectEnvironment) error {
+    serviceName := fmt.Sprintf("%s-agent", environment.GetName())
+    service := &corev1.Service{}
+
+    serviceLabels := map[string]string {
+        "mlops.aigency.com/environment": environment.GetName(),
+        "mlops.aigency.com/component": "agent",
+    }
+
+    if err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: environment.GetNamespace()}, service); err != nil {
+        if errors.IsNotFound(err) {
+            service = &corev1.Service {
+                ObjectMeta: metav1.ObjectMeta{
+                    Name: serviceName,
+                    Namespace: environment.GetNamespace(),
+                    Labels: serviceLabels,
+                },
+				Spec: corev1.ServiceSpec{
+					Selector: serviceLabels,
+                    ClusterIP: corev1.ClusterIPNone,
+				},
+            }
+
+            if err := ctrl.SetControllerReference(environment, service, r.Scheme); err != nil {
+                return err
+            }
+
+            if err := r.Create(ctx, service); err != nil {
+                return err
+            }
+
+            return nil
+        }
+
+        return err
+    }
+
+    return nil
 }
